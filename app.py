@@ -337,11 +337,11 @@ if mode == "Point prediction":
     st.markdown('<div class="kinetics-header">Activation energies  (Ea₁, Ea₂, Ea₃)  —  J/mol</div>', unsafe_allow_html=True)
     ec1, ec2, ec3 = st.columns(3)
     with ec1:
-        Ea1 = st.slider("Ea₁  (J/mol)", 30_000, 100_000, DEFAULT_Ea1, 1_000)
+        Ea1 = st.slider("Ea₁  (J/mol)", 30_000, 100_000, DEFAULT_Ea1, 500)
     with ec2:
-        Ea2 = st.slider("Ea₂  (J/mol)", 40_000, 120_000, DEFAULT_Ea2, 1_000)
+        Ea2 = st.slider("Ea₂  (J/mol)", 40_000, 120_000, DEFAULT_Ea2, 500)
     with ec3:
-        Ea3 = st.slider("Ea₃  (J/mol)", 30_000, 100_000, DEFAULT_Ea3, 1_000)
+        Ea3 = st.slider("Ea₃  (J/mol)", 30_000, 100_000, DEFAULT_Ea3, 500)
 
     # ── Solve ODE + predict ────────────────────────────────────────────────
     ideal_B, hybrid_B, correction, activity = point_predict(
