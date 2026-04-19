@@ -1,6 +1,6 @@
 {
-  "model_name": "XGBoost",
-  "trained_at": "2026-04-19T06:43:42.915319+00:00",
+  "model_name": "RandomForest",
+  "trained_at": "2026-04-19T13:52:28.623211+00:00",
   "features": [
     "time",
     "temp",
@@ -12,14 +12,14 @@
   ],
   "metrics": {
     "mae": 0.0028,
-    "rmse": 0.00464,
-    "r2": 0.99947
+    "rmse": 0.00472,
+    "r2": 0.99945
   },
   "all_scores": {
     "XGBoost": {
-      "mae": 0.0028,
-      "rmse": 0.00464,
-      "r2": 0.99947
+      "mae": 0.00277,
+      "rmse": 0.00489,
+      "r2": 0.99941
     },
     "LightGBM": {
       "mae": 0.00502,
@@ -38,8 +38,8 @@
     "catalyst_cost": 50
   },
   "decision": {
-    "hybrid_stop_h": 8.6,
+    "hybrid_stop_h": 8.89,
     "ideal_stop_h": 16.0,
-    "improvement_h": 7.4
+    "improvement_h": 7.11
   }
 }
