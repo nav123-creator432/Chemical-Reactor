@@ -1,0 +1,45 @@
+{
+  "model_name": "XGBoost",
+  "trained_at": "2026-04-19T06:43:42.915319+00:00",
+  "features": [
+    "time",
+    "temp",
+    "temp_sq",
+    "ideal_B",
+    "B_lag1",
+    "B_lag2",
+    "activity"
+  ],
+  "metrics": {
+    "mae": 0.0028,
+    "rmse": 0.00464,
+    "r2": 0.99947
+  },
+  "all_scores": {
+    "XGBoost": {
+      "mae": 0.0028,
+      "rmse": 0.00464,
+      "r2": 0.99947
+    },
+    "LightGBM": {
+      "mae": 0.00502,
+      "rmse": 0.01006,
+      "r2": 0.99752
+    },
+    "RandomForest": {
+      "mae": 0.0028,
+      "rmse": 0.00472,
+      "r2": 0.99945
+    }
+  },
+  "profit_params": {
+    "price": 1000,
+    "op_cost": 20,
+    "catalyst_cost": 50
+  },
+  "decision": {
+    "hybrid_stop_h": 8.6,
+    "ideal_stop_h": 16.0,
+    "improvement_h": 7.4
+  }
+}
