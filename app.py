@@ -82,6 +82,17 @@ section[data-testid="stSidebar"] {
     padding: 20px 24px;
     margin: 16px 0;
 }
+.kinetics-header {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: #4a5568;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    border-bottom: 1px solid #1e2330;
+    padding-bottom: 6px;
+    margin-bottom: 14px;
+    margin-top: 4px;
+}
 .tag {
     display: inline-block;
     font-family: 'IBM Plex Mono', monospace;
@@ -125,30 +136,42 @@ hr { border-color: #1e2330 !important; }
 """, unsafe_allow_html=True)
 
 
-# ── Constants (must match training) ──────────────────────────────────────────
-R, T_NOM, T_AMP = 8.314, 300.0, 25.0
-Ea1, Ea2, Ea3   = 50_000, 70_000, 60_000
-A1, A2, A3      = 5.1e7, 2.0e6, 1.5e7
-K_DEACT         = 0.05
-FEATURES        = ['time', 'temp', 'temp_sq', 'ideal_B', 'B_lag1', 'B_lag2', 'activity']
+# ── Physical constants (base / reference values) ──────────────────────────────
+R       = 8.314
+T_NOM   = 300.0
+T_AMP   = 25.0
+K_DEACT = 0.05
+
+# Default kinetic parameters (reference values used during training)
+DEFAULT_A1, DEFAULT_A2, DEFAULT_A3       = 5.1e7, 2.0e6, 1.5e7
+DEFAULT_Ea1, DEFAULT_Ea2, DEFAULT_Ea3   = 50_000, 70_000, 60_000
+
+FEATURES = ['time', 'temp', 'temp_sq', 'ideal_B', 'B_lag1', 'B_lag2', 'activity']
 PRICE, OP_COST, CATALYST_COST = 1_000, 20, 50
 
 
-# ── ODE functions ─────────────────────────────────────────────────────────────
-def ideal_kinetics(y, t):
-    A, B, C, D = y
-    k1 = A1 * np.exp(-Ea1 / (R * T_NOM))
-    k2 = A2 * np.exp(-Ea2 / (R * T_NOM))
-    k3 = A3 * np.exp(-Ea3 / (R * T_NOM))
-    return [-(k1+k3)*A, k1*A - k2*B, k2*B, k3*A]
+# ── ODE helpers that accept kinetic params ────────────────────────────────────
+def make_ideal_kinetics(A1, A2, A3, Ea1, Ea2, Ea3, T=None):
+    """Returns an ODE function using given pre-exponential and activation energies."""
+    T_use = T if T is not None else T_NOM
+    def ideal_kinetics(y, t):
+        a, B, C, D = y
+        k1 = A1 * np.exp(-Ea1 / (R * T_use))
+        k2 = A2 * np.exp(-Ea2 / (R * T_use))
+        k3 = A3 * np.exp(-Ea3 / (R * T_use))
+        return [-(k1+k3)*a, k1*a - k2*B, k2*B, k3*a]
+    return ideal_kinetics
 
-def real_system(y, t):
-    A, B, C, D, act = y
-    T  = T_NOM + T_AMP * np.sin(2 * np.pi * t / 24)
-    k1 = A1 * np.exp(-Ea1 / (R * T)) * act
-    k2 = A2 * np.exp(-Ea2 / (R * T)) * act
-    k3 = A3 * np.exp(-Ea3 / (R * T)) * act
-    return [-(k1+k3)*A, k1*A - k2*B, k2*B, k3*A, -K_DEACT*act*A]
+def make_real_system(A1, A2, A3, Ea1, Ea2, Ea3):
+    """Returns real ODE with sinusoidal T and catalyst deactivation."""
+    def real_system(y, t):
+        a, B, C, D, act = y
+        T  = T_NOM + T_AMP * np.sin(2 * np.pi * t / 24)
+        k1 = A1 * np.exp(-Ea1 / (R * T)) * act
+        k2 = A2 * np.exp(-Ea2 / (R * T)) * act
+        k3 = A3 * np.exp(-Ea3 / (R * T)) * act
+        return [-(k1+k3)*a, k1*a - k2*B, k2*B, k3*a, -K_DEACT*act*a]
+    return real_system
 
 
 # ── Load model ────────────────────────────────────────────────────────────────
@@ -174,21 +197,60 @@ def _predict_raw(X_raw):
         return model.predict(pd.DataFrame(X_s, columns=FEATURES))
     return model.predict(X_s)
 
-def run_trajectory(price, op_cost, cat_cost, n=600):
-    t  = np.linspace(0, 48, n)
-    id = odeint(ideal_kinetics, [1,0,0,0], t)
-    rl = odeint(real_system,    [1,0,0,0,1], t)
-    ideal_B  = id[:, 1]
-    activity = rl[:, 4]
-    temp     = T_NOM + T_AMP * np.sin(2*np.pi*t/24)
+
+def run_trajectory(price, op_cost, cat_cost, A1, A2, A3, Ea1, Ea2, Ea3, n=600):
+    """Run full 48-h trajectory with user-supplied kinetic parameters."""
+    t = np.linspace(0, 48, n)
+
+    id_fn = make_ideal_kinetics(A1, A2, A3, Ea1, Ea2, Ea3)
+    rl_fn = make_real_system(A1, A2, A3, Ea1, Ea2, Ea3)
+
+    id_sol = odeint(id_fn, [1, 0, 0, 0], t)
+    rl_sol = odeint(rl_fn, [1, 0, 0, 0, 1], t)
+
+    ideal_B  = id_sol[:, 1]
+    activity = rl_sol[:, 4]
+    temp     = T_NOM + T_AMP * np.sin(2 * np.pi * t / 24)
     lag1 = np.concatenate([[ideal_B[0]], ideal_B[:-1]])
     lag2 = np.concatenate([[ideal_B[0], ideal_B[0]], ideal_B[:-2]])
+
     X = np.column_stack([t, temp, temp**2, ideal_B, lag1, lag2, activity])
     hybrid_B = ideal_B + _predict_raw(X)
+
     profit_h = (hybrid_B * price) - (t * op_cost) - cat_cost
     profit_i = (ideal_B  * price) - (t * op_cost) - cat_cost
     best = int(np.argmax(profit_h))
     return t, ideal_B, hybrid_B, activity, profit_h, profit_i, best
+
+
+def point_predict(time_h, temp_K, A1, A2, A3, Ea1, Ea2, Ea3):
+    """
+    Given kinetic parameters + operating point (time, temp),
+    run ODE up to time_h at temperature temp_K (constant approximation),
+    then call the ML model for correction.
+    """
+    # Solve ideal ODE from 0 → time_h at user temp
+    t_grid = np.linspace(0, time_h, max(int(time_h * 20), 10))
+    id_fn  = make_ideal_kinetics(A1, A2, A3, Ea1, Ea2, Ea3, T=temp_K)
+    id_sol = odeint(id_fn, [1, 0, 0, 0], t_grid)
+
+    # Solve real ODE (sinusoidal T) for activity
+    rl_fn  = make_real_system(A1, A2, A3, Ea1, Ea2, Ea3)
+    rl_sol = odeint(rl_fn, [1, 0, 0, 0, 1], t_grid)
+
+    ideal_B_now = float(id_sol[-1, 1])
+    activity    = float(rl_sol[-1, 4])
+
+    # Build lag features from trajectory
+    B_traj = id_sol[:, 1]
+    B_lag1 = float(B_traj[-2]) if len(B_traj) >= 2 else ideal_B_now
+    B_lag2 = float(B_traj[-3]) if len(B_traj) >= 3 else ideal_B_now
+
+    feats = [time_h, temp_K, temp_K**2, ideal_B_now, B_lag1, B_lag2, activity]
+    correction = float(_predict_raw([feats])[0])
+    hybrid_B   = ideal_B_now + correction
+
+    return ideal_B_now, hybrid_B, correction, activity
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -216,9 +278,9 @@ with st.sidebar:
 
     st.markdown('<hr>', unsafe_allow_html=True)
     st.markdown("**Profit parameters**")
-    price     = st.slider("Price  ($/unit yield)", 500, 2000, PRICE, 50)
-    op_cost   = st.slider("Operating cost  ($/h)",   5,   80, OP_COST, 5)
-    cat_cost  = st.slider("Catalyst cost  ($)",       0,  200, CATALYST_COST, 10)
+    price    = st.slider("Price  ($/unit yield)", 500, 2000, PRICE, 50)
+    op_cost  = st.slider("Operating cost  ($/h)",   5,   80, OP_COST, 5)
+    cat_cost = st.slider("Catalyst cost  ($)",       0,  200, CATALYST_COST, 10)
 
     if model_ok:
         trained = meta.get("trained_at", "")[:10]
@@ -246,27 +308,78 @@ PLOT_THEME = dict(
 # ── MODE 1: POINT PREDICTION ─────────────────────────────────────────────────
 if mode == "Point prediction":
     st.markdown("## Point prediction")
-    st.markdown("Enter current reactor readings to get an instant hybrid B estimate.")
+    st.markdown("Enter kinetic parameters and operating conditions — the ODE is solved internally.")
     st.markdown("")
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        time_h   = st.slider("Time elapsed  (h)",       0.0, 48.0, 10.0, 0.1)
-        temp_K   = st.slider("Temperature  (K)",       275.0, 325.0, 302.0, 0.5)
-    with c2:
-        ideal_B  = st.slider("Ideal B  (ODE output)",  0.0, 1.0, 0.50, 0.01)
-        activity = st.slider("Catalyst activity",       0.0, 1.0, 0.85, 0.01)
-    with c3:
-        B_lag1   = st.slider("B  (1 step ago)",         0.0, 1.0, 0.49, 0.01)
-        B_lag2   = st.slider("B  (2 steps ago)",        0.0, 1.0, 0.48, 0.01)
+    # ── Operating conditions (top row) ────────────────────────────────────
+    st.markdown('<div class="kinetics-header">Operating conditions</div>', unsafe_allow_html=True)
+    op1, op2 = st.columns(2)
+    with op1:
+        time_h = st.slider("Time elapsed  (h)", 0.0, 48.0, 10.0, 0.1)
+    with op2:
+        temp_K = st.slider("Temperature  (K)", 275.0, 325.0, 302.0, 0.5)
 
-    feats     = [time_h, temp_K, temp_K**2, ideal_B, B_lag1, B_lag2, activity]
-    correction = float(_predict_raw([feats])[0])
-    hybrid_B  = ideal_B + correction
+    st.markdown("")
+
+    # ── Pre-exponential factors ────────────────────────────────────────────
+    st.markdown('<div class="kinetics-header">Pre-exponential factors  (k₁, k₂, k₃)</div>', unsafe_allow_html=True)
+    kc1, kc2, kc3 = st.columns(3)
+    with kc1:
+        A1 = st.slider("k₁  (A₁, s⁻¹)", 1e6, 2e8, DEFAULT_A1, 1e6, format="%.2e")
+    with kc2:
+        A2 = st.slider("k₂  (A₂, s⁻¹)", 1e5, 1e7, DEFAULT_A2, 1e5, format="%.2e")
+    with kc3:
+        A3 = st.slider("k₃  (A₃, s⁻¹)", 1e6, 5e7, DEFAULT_A3, 5e5, format="%.2e")
+
+    st.markdown("")
+
+    # ── Activation energies ────────────────────────────────────────────────
+    st.markdown('<div class="kinetics-header">Activation energies  (Ea₁, Ea₂, Ea₃)  —  J/mol</div>', unsafe_allow_html=True)
+    ec1, ec2, ec3 = st.columns(3)
+    with ec1:
+        Ea1 = st.slider("Ea₁  (J/mol)", 30_000, 100_000, DEFAULT_Ea1, 1_000)
+    with ec2:
+        Ea2 = st.slider("Ea₂  (J/mol)", 40_000, 120_000, DEFAULT_Ea2, 1_000)
+    with ec3:
+        Ea3 = st.slider("Ea₃  (J/mol)", 30_000, 100_000, DEFAULT_Ea3, 1_000)
+
+    # ── Solve ODE + predict ────────────────────────────────────────────────
+    ideal_B, hybrid_B, correction, activity = point_predict(
+        time_h, temp_K, A1, A2, A3, Ea1, Ea2, Ea3
+    )
+
+    # Compute derived k values at current T for display
+    k1_now = A1 * np.exp(-Ea1 / (R * temp_K))
+    k2_now = A2 * np.exp(-Ea2 / (R * temp_K))
+    k3_now = A3 * np.exp(-Ea3 / (R * temp_K))
+
     profit_val = (hybrid_B * price) - (time_h * op_cost) - cat_cost
 
     st.markdown('<hr>', unsafe_allow_html=True)
 
+    # ── Derived k values at current T ─────────────────────────────────────
+    st.markdown(f"""
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4a5568;
+                text-transform:uppercase;letter-spacing:0.12em;margin-bottom:8px">
+        Effective rate constants at T = {temp_K:.1f} K
+    </div>
+    <div style="display:flex;gap:24px;margin-bottom:18px">
+        <div><span style="color:#63b3ed">k₁</span>
+             <span style="color:#e2e8f0;margin-left:8px;font-family:'IBM Plex Mono',monospace">
+                 {k1_now:.3e} s⁻¹</span></div>
+        <div><span style="color:#63b3ed">k₂</span>
+             <span style="color:#e2e8f0;margin-left:8px;font-family:'IBM Plex Mono',monospace">
+                 {k2_now:.3e} s⁻¹</span></div>
+        <div><span style="color:#63b3ed">k₃</span>
+             <span style="color:#e2e8f0;margin-left:8px;font-family:'IBM Plex Mono',monospace">
+                 {k3_now:.3e} s⁻¹</span></div>
+        <div><span style="color:#ecc94b">activity</span>
+             <span style="color:#e2e8f0;margin-left:8px;font-family:'IBM Plex Mono',monospace">
+                 {activity:.3f}</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Output metrics ─────────────────────────────────────────────────────
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(f"""<div class="metric-card">
@@ -294,8 +407,10 @@ if mode == "Point prediction":
             <div class="{pcolor}">{'▲' if profit_val > 0 else '▼'} ${profit_val:,.0f}</div>
         </div>""", unsafe_allow_html=True)
 
-    # Mini gauge — how far through the optimal run are we?
-    t_g, id_B, hy_B, act_t, pr_h, pr_i, best_idx = run_trajectory(price, op_cost, cat_cost)
+    # ── Optimal stop banner ────────────────────────────────────────────────
+    t_g, id_B, hy_B, act_t, pr_h, pr_i, best_idx = run_trajectory(
+        price, op_cost, cat_cost, A1, A2, A3, Ea1, Ea2, Ea3
+    )
     opt_t = t_g[best_idx]
     pct   = min(time_h / opt_t * 100, 100) if opt_t > 0 else 0
     bar_color = "#48bb78" if pct < 80 else "#ecc94b" if pct < 100 else "#f56565"
@@ -309,7 +424,6 @@ if mode == "Point prediction":
 
     st.markdown(f'<div class="{banner_cls}">{msg}</div>', unsafe_allow_html=True)
 
-    # Progress bar
     st.markdown(f"""
     <div style="margin:6px 0 18px">
         <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4a5568;margin-bottom:4px">
@@ -325,11 +439,35 @@ if mode == "Point prediction":
 # ── MODE 2: FULL TRAJECTORY ───────────────────────────────────────────────────
 else:
     st.markdown("## Full trajectory")
-    st.markdown("Simulates the complete 48-hour run and finds the profit-optimal stop time.")
+    st.markdown("Simulates the complete 48-hour run with your kinetic parameters and finds the profit-optimal stop time.")
+    st.markdown("")
+
+    # ── Kinetic parameter inputs (trajectory mode) ─────────────────────────
+    st.markdown('<div class="kinetics-header">Pre-exponential factors  (k₁, k₂, k₃)</div>', unsafe_allow_html=True)
+    tkc1, tkc2, tkc3 = st.columns(3)
+    with tkc1:
+        tA1 = st.slider("k₁  (A₁, s⁻¹) ", 1e6, 2e8, DEFAULT_A1, 1e6, format="%.2e", key="tA1")
+    with tkc2:
+        tA2 = st.slider("k₂  (A₂, s⁻¹) ", 1e5, 1e7, DEFAULT_A2, 1e5, format="%.2e", key="tA2")
+    with tkc3:
+        tA3 = st.slider("k₃  (A₃, s⁻¹) ", 1e6, 5e7, DEFAULT_A3, 5e5, format="%.2e", key="tA3")
+
+    st.markdown("")
+    st.markdown('<div class="kinetics-header">Activation energies  (Ea₁, Ea₂, Ea₃)  —  J/mol</div>', unsafe_allow_html=True)
+    tec1, tec2, tec3 = st.columns(3)
+    with tec1:
+        tEa1 = st.slider("Ea₁  (J/mol) ", 30_000, 100_000, DEFAULT_Ea1, 1_000, key="tEa1")
+    with tec2:
+        tEa2 = st.slider("Ea₂  (J/mol) ", 40_000, 120_000, DEFAULT_Ea2, 1_000, key="tEa2")
+    with tec3:
+        tEa3 = st.slider("Ea₃  (J/mol) ", 30_000, 100_000, DEFAULT_Ea3, 1_000, key="tEa3")
+
     st.markdown("")
 
     with st.spinner("Running simulation..."):
-        t_g, id_B, hy_B, act_t, pr_h, pr_i, best_idx = run_trajectory(price, op_cost, cat_cost)
+        t_g, id_B, hy_B, act_t, pr_h, pr_i, best_idx = run_trajectory(
+            price, op_cost, cat_cost, tA1, tA2, tA3, tEa1, tEa2, tEa3
+        )
 
     opt_t      = t_g[best_idx]
     ideal_opt  = int(np.argmax(pr_i))
@@ -337,7 +475,7 @@ else:
     saving_h   = ideal_t - opt_t
     max_profit = pr_h[best_idx]
 
-    # ── Summary metrics
+    # ── Summary metrics ────────────────────────────────────────────────────
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(f"""<div class="metric-card">
@@ -364,22 +502,20 @@ else:
             <div style="margin-top:4px;font-size:11px;color:#4a5568;font-family:'IBM Plex Mono',monospace">hybrid prediction</div>
         </div>""", unsafe_allow_html=True)
 
-    # ── Charts
+    # ── Charts ─────────────────────────────────────────────────────────────
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=["B concentration", "Profit curve", "Catalyst activity", "ML correction"],
         vertical_spacing=0.14, horizontal_spacing=0.08,
     )
 
-    # 1. Concentration
     fig.add_trace(go.Scatter(x=t_g, y=id_B, name="Ideal (ODE)",
         line=dict(color="#4a5568", dash="dash", width=1.5)), row=1, col=1)
     fig.add_trace(go.Scatter(x=t_g, y=hy_B, name="Hybrid",
         line=dict(color="#48bb78", width=2)), row=1, col=1)
-    fig.add_vline(x=opt_t,  line_color="#48bb78", line_dash="dot", line_width=1, row=1, col=1)
+    fig.add_vline(x=opt_t,   line_color="#48bb78", line_dash="dot", line_width=1, row=1, col=1)
     fig.add_vline(x=ideal_t, line_color="#718096", line_dash="dot", line_width=1, row=1, col=1)
 
-    # 2. Profit
     fig.add_trace(go.Scatter(x=t_g, y=pr_i, name="Ideal profit",
         line=dict(color="#4a5568", dash="dash", width=1.5), showlegend=False), row=1, col=2)
     fig.add_trace(go.Scatter(x=t_g, y=pr_h, name="Hybrid profit",
@@ -389,14 +525,12 @@ else:
         font=dict(color="#48bb78", size=10, family="IBM Plex Mono"),
         showarrow=False, xanchor="left", row=1, col=2)
 
-    # 3. Activity
     fig.add_trace(go.Scatter(x=t_g, y=act_t, name="Activity",
         line=dict(color="#ecc94b", width=1.5),
         fill="tozeroy", fillcolor="rgba(236,201,75,0.06)", showlegend=False), row=2, col=1)
 
-    # 4. ML correction
-    correction = hy_B - id_B
-    fig.add_trace(go.Scatter(x=t_g, y=correction, name="ML correction",
+    correction_arr = hy_B - id_B
+    fig.add_trace(go.Scatter(x=t_g, y=correction_arr, name="ML correction",
         line=dict(color="#63b3ed", width=1.5), showlegend=False), row=2, col=2)
     fig.add_hline(y=0, line_color="#1e2330", line_width=1, row=2, col=2)
 
